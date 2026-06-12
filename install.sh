@@ -69,6 +69,8 @@ log_dir = "$LOG_DIR"
 EOF
   echo "  API key: $API_KEY"
   echo "  Save this key — you'll need it in dck-panel!"
+else
+  API_KEY=$(grep -oP 'api_key\s*=\s*"\K[^"]+' "$CONFIG_DIR/config.toml" || echo "unknown")
 fi
 
 # Systemd service
@@ -91,15 +93,34 @@ WantedBy=multi-user.target
 UNIT
 fi
 
+# Start service
 echo ""
-echo "==> Installation complete!"
+echo "Starting dck-wings service..."
+systemctl enable --now dck-wings || true
+sleep 2
+
+HOSTNAME=$(hostname)
+IP=$(curl -sf4 https://ifconfig.io 2>/dev/null || echo "<this-server-ip>")
+
 echo ""
-echo "Next steps:"
-echo "  1. Review config:  nano $CONFIG_DIR/config.toml"
-echo "  2. Start service:  systemctl enable --now dck-wings"
-echo "  3. Check status:   systemctl status dck-wings"
-echo "  4. View logs:      journalctl -u dck-wings -f"
+echo "=============================================="
+echo "  dck-wings installation complete!"
+echo "=============================================="
 echo ""
-echo "If you changed the API key, add it to dck-panel's .env:"
-echo "  DECK_WINGS_API_KEY=<your-key>"
-echo "  DECK_WINGS_URL=http://<vds-ip>:8080"
+echo "Node:        $HOSTNAME"
+echo "URL:         http://$IP:8080"
+echo "API key:     $API_KEY"
+echo ""
+echo "--- Register this node on your panel ---"
+echo ""
+echo "Run this on your dck-panel server:"
+echo ""
+echo "curl -s -X POST https://<panel>/api/admin/nodes \\"
+echo "  -H \"Authorization: Bearer <admin-token>\" \\"
+echo "  -H \"Content-Type: application/json\" \\"
+echo "  -d '{\"name\":\"$HOSTNAME\",\"url\":\"http://$IP:8080\"}'"
+echo ""
+echo "Then add this API key to the node config in panel."
+echo ""
+echo "Service:     systemctl status dck-wings"
+echo "Logs:        journalctl -u dck-wings -f"
