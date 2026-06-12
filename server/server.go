@@ -126,7 +126,7 @@ func (s *Server) readContainerState(id string) (map[string]interface{}, error) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "ok",
-		"version": "1.0.0",
+		"version": "1.1.0",
 		"dck":     s.cfg.DckBin,
 	})
 }
@@ -207,18 +207,19 @@ func (s *Server) listContainers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Image       string   `json:"image"`
-		Name        string   `json:"name"`
-		Cmd         []string `json:"cmd"`
-		Ports       []string `json:"ports"`
-		Volumes     []string `json:"volumes"`
-		Env         []string `json:"env"`
-		Detach      bool     `json:"detach"`
-		Interactive bool     `json:"interactive"`
-		Memory      string   `json:"memory"`
-		CPUs        float64  `json:"cpus"`
-		Network     string   `json:"network"`
-		Restart     string   `json:"restart"`
+		Image         string   `json:"image"`
+		Name          string   `json:"name"`
+		Cmd           []string `json:"cmd"`
+		Ports         []string `json:"ports"`
+		Volumes       []string `json:"volumes"`
+		Env           []string `json:"env"`
+		Detach        bool     `json:"detach"`
+		Interactive   bool     `json:"interactive"`
+		Memory        string   `json:"memory"`
+		CPUs          float64  `json:"cpus"`
+		Network       string   `json:"network"`
+		Restart       string   `json:"restart"`
+		StartupScript string   `json:"startup_script"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -250,6 +251,9 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Restart != "" {
 		args = append(args, "--restart", req.Restart)
+	}
+	if req.StartupScript != "" {
+		args = append(args, "--startup", req.StartupScript)
 	}
 	for _, p := range req.Ports {
 		args = append(args, "-p", p)
