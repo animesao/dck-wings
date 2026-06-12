@@ -36,7 +36,7 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		addr := fmt.Sprintf(":%d", cfg.Port)
+		addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 		log.Printf("dck-wings %s starting on %s", version, addr)
 		if err := srv.Start(addr); err != nil {
 			log.Fatalf("Server: %v", err)
