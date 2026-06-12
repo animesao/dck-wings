@@ -220,6 +220,7 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 		Network       string   `json:"network"`
 		Restart       string   `json:"restart"`
 		StartupScript string   `json:"startup_script"`
+		Disk          string   `json:"disk"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -254,6 +255,9 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.StartupScript != "" {
 		args = append(args, "--startup", req.StartupScript)
+	}
+	if req.Disk != "" {
+		args = append(args, "--disk", req.Disk)
 	}
 	for _, p := range req.Ports {
 		args = append(args, "-p", p)
