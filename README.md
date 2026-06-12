@@ -42,6 +42,9 @@ All requests require `Authorization: Bearer <api_key>` header or `?api_key=` que
 | GET | `/api/containers/:id/stats` | Live resource stats |
 | GET | `/api/containers/:id/state` | Container state |
 | POST | `/api/containers/:id/exec` | Execute command (`{"cmd":["sh","-c","..."]}`) |
+| GET/WS | `/api/containers/:id/console` | WebSocket interactive console |
+| GET/POST/DELETE | `/api/containers/:id/files/*` | File manager operations |
+| GET/POST/DELETE | `/api/images*` | Image management |
 
 ### Create Container
 
@@ -55,7 +58,8 @@ POST /api/containers
   "env": ["FOO=bar"],
   "detach": true,
   "memory": "512m",
-  "cpus": 1.0
+  "cpus": 1.0,
+  "startup_script": "#!/bin/sh\necho 'Custom startup'\n# your commands here"
 }
 ```
 
