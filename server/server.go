@@ -431,9 +431,25 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 	for _, p := range req.Ports {
 		args = append(args, "-p", p)
 	}
+	// Auto-mount /home/container volume if not specified
+	volName := req.Name
+	if volName == "" {
+		volName = strings.ReplaceAll(req.Image, "/", "_")
+		volName = strings.ReplaceAll(volName, ":", "_")
+	}
+	hasHomeVolume := false
 	for _, v := range req.Volumes {
+		parts := strings.SplitN(v, ":", 2)
+		if len(parts) == 2 && parts[1] == "/home/container" {
+			hasHomeVolume = true
+		}
 		args = append(args, "-v", v)
 	}
+	if !hasHomeVolume {
+		args = append(args, "-v", "data_"+volName+":/home/container")
+	}
+	// Default workdir to /home/container
+	args = append(args, "--workdir", "/home/container")
 	for _, e := range req.Env {
 		args = append(args, "-e", e)
 	}
