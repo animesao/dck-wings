@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,13 +23,52 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+type rateLimiter struct {
+	mu       sync.Mutex
+	visitors map[string]*visitor
+	limit    int
+	window   time.Duration
+}
+
+type visitor struct {
+	count    int
+	lastSeen time.Time
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	return &rateLimiter{
+		visitors: make(map[string]*visitor),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+func (rl *rateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	v, exists := rl.visitors[ip]
+	if !exists {
+		rl.visitors[ip] = &visitor{count: 1, lastSeen: time.Now()}
+		return true
+	}
+	if time.Since(v.lastSeen) > rl.window {
+		v.count = 1
+		v.lastSeen = time.Now()
+		return true
+	}
+	v.count++
+	v.lastSeen = time.Now()
+	return v.count <= rl.limit
+}
+
 type Server struct {
-	cfg    Config
-	server *http.Server
+	cfg         Config
+	server      *http.Server
+	rateLimiter *rateLimiter
 }
 
 func New(cfg Config) *Server {
-	s := &Server{cfg: cfg}
+	s := &Server{cfg: cfg, rateLimiter: newRateLimiter(100, time.Second)}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/health", s.handleHealth)
@@ -52,6 +92,17 @@ func New(cfg Config) *Server {
 
 func (s *Server) Start(addr string) error {
 	s.server.Addr = addr
+	if s.cfg.LogDir != "" {
+		os.MkdirAll(s.cfg.LogDir, 0755)
+		logPath := filepath.Join(s.cfg.LogDir, "server.log")
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err == nil {
+			log.SetOutput(io.MultiWriter(os.Stderr, f))
+		}
+	}
+	if s.cfg.TLSCert != "" && s.cfg.TLSKey != "" {
+		return s.server.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
+	}
 	return s.server.ListenAndServe()
 }
 
@@ -63,6 +114,14 @@ func (s *Server) Stop() {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientIP := r.RemoteAddr
+		if idx := strings.LastIndex(clientIP, ":"); idx != -1 {
+			clientIP = clientIP[:idx]
+		}
+		if !s.rateLimiter.Allow(clientIP) {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
 		token := r.Header.Get("Authorization")
 		if token == "" {
 			token = r.URL.Query().Get("api_key")
@@ -78,10 +137,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) dckTimeout() time.Duration {
+	if s.cfg.DckTimeout > 0 {
+		return time.Duration(s.cfg.DckTimeout) * time.Second
+	}
+	return 60 * time.Second
+}
+
 // --- dck CLI wrapper ---
 
 func (s *Server) dck(args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.dckTimeout())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, s.cfg.DckBin, args...)
 	out, err := cmd.CombinedOutput()
@@ -89,7 +155,7 @@ func (s *Server) dck(args ...string) (string, error) {
 }
 
 func (s *Server) dckWithStdin(input io.Reader, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.dckTimeout())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, s.cfg.DckBin, args...)
 	cmd.Stdin = input
@@ -98,7 +164,7 @@ func (s *Server) dckWithStdin(input io.Reader, args ...string) (string, error) {
 }
 
 func (s *Server) dckStream(w io.Writer, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), s.dckTimeout())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, s.cfg.DckBin, args...)
 	cmd.Stdout = w
@@ -324,6 +390,7 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 		StartupScript string   `json:"startup_script"`
 		Disk          string   `json:"disk"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -386,8 +453,8 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleContainerByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/containers/")
 	id = strings.TrimSuffix(id, "/")
-	if id == "" {
-		http.Error(w, "Container ID required", http.StatusBadRequest)
+	if id == "" || strings.Contains(id, "..") {
+		http.Error(w, "Invalid container ID", http.StatusBadRequest)
 		return
 	}
 
@@ -526,6 +593,7 @@ func (s *Server) containerExec(w http.ResponseWriter, id string, r *http.Request
 	var req struct {
 		Cmd []string `json:"cmd"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -637,6 +705,12 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request, id string) 
 	if path == "" {
 		path = "/"
 	}
+	cleanPath := filepath.Clean("/" + path)
+	if !strings.HasPrefix(cleanPath, "/") {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	path = cleanPath
 
 	switch r.Method {
 	case "GET":
@@ -716,6 +790,7 @@ func (s *Server) fileRead(w http.ResponseWriter, id, path string) {
 }
 
 func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request, id, path string) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -726,7 +801,7 @@ func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request, id, path stri
 
 	out, err := s.dckWithStdin(
 		strings.NewReader(string(body)),
-		"exec", id, "sh", "-c", fmt.Sprintf("cat > '%s'", strings.ReplaceAll(path, "'", "'\\''")),
+		"exec", id, "sh", "-c", `cat > "$1"`, "--", path,
 	)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("%s: %s", err.Error(), out)})
@@ -782,7 +857,7 @@ func (s *Server) fileUpload(w http.ResponseWriter, r *http.Request, id, path str
 	s.dck("exec", id, "mkdir", "-p", filepath.Dir(path))
 	out, err := s.dckWithStdin(
 		file,
-		"exec", id, "sh", "-c", fmt.Sprintf("cat > '%s'", strings.ReplaceAll(path, "'", "'\\''")),
+		"exec", id, "sh", "-c", `cat > "$1"`, "--", path,
 	)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("%s: %s", err.Error(), out)})
@@ -827,11 +902,12 @@ func (s *Server) handleImages(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "image is required", http.StatusBadRequest)
 			return
 		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if err := s.dckStream(w, "pull", req.Image); err != nil {
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			fmt.Fprintf(w, "\nError: %v\n", err)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "pulled", "image": req.Image})
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

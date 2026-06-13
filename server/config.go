@@ -3,65 +3,40 @@ package server
 import (
 	"fmt"
 	"os"
-	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 type Config struct {
-	Port    int    `toml:"port"`
-	Host    string `toml:"host"`
-	APIKey  string `toml:"api_key"`
-	DckBin  string `toml:"dck_bin"`
-	DataDir string `toml:"data_dir"`
-	LogDir  string `toml:"log_dir"`
+	Port       int    `toml:"port"`
+	Host       string `toml:"host"`
+	APIKey     string `toml:"api_key"`
+	DckBin     string `toml:"dck_bin"`
+	DataDir    string `toml:"data_dir"`
+	LogDir     string `toml:"log_dir"`
+	TLSCert    string `toml:"tls_cert"`
+	TLSKey     string `toml:"tls_key"`
+	DckTimeout int    `toml:"dck_timeout"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Port:    8080,
-		Host:    "0.0.0.0",
-		APIKey:  "",
-		DckBin:  "/usr/local/bin/dck",
-		DataDir: "/var/lib/dck-wings",
-		LogDir:  "/var/log/dck-wings",
+		Port:       8080,
+		Host:       "0.0.0.0",
+		APIKey:     "",
+		DckBin:     "/usr/local/bin/dck",
+		DataDir:    "/var/lib/dck-wings",
+		LogDir:     "/var/log/dck-wings",
+		DckTimeout: 60,
 	}
 }
 
 func LoadConfig(path string) (Config, error) {
 	cfg := DefaultConfig()
 
-	data, err := os.ReadFile(path)
+	_, err := toml.DecodeFile(path, &cfg)
 	if err != nil {
-		return cfg, fmt.Errorf("read config: %w", err)
-	}
-
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		val := strings.TrimSpace(parts[1])
-		val = strings.Trim(val, "\"")
-
-		switch key {
-		case "port":
-			fmt.Sscanf(val, "%d", &cfg.Port)
-		case "host":
-			cfg.Host = val
-		case "api_key":
-			cfg.APIKey = val
-		case "dck_bin":
-			cfg.DckBin = val
-		case "data_dir":
-			cfg.DataDir = val
-		case "log_dir":
-			cfg.LogDir = val
-		}
+		return cfg, fmt.Errorf("decode config: %w", err)
 	}
 
 	if cfg.APIKey == "" {
@@ -79,6 +54,9 @@ api_key = "change-me"
 dck_bin = "/usr/local/bin/dck"
 data_dir = "/var/lib/dck-wings"
 log_dir = "/var/log/dck-wings"
+tls_cert = ""
+tls_key = ""
+dck_timeout = 60
 `
 	return os.WriteFile(path, []byte(content), 0644)
 }
