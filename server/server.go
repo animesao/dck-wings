@@ -446,10 +446,16 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "-v", v)
 	}
 	if !hasHomeVolume {
+		// Mount the same volume to both /home/container and /data
+		// (Pterodactyl-compatible: apps writing to /data appear in /home/container)
 		args = append(args, "-v", "data_"+volName+":/home/container")
+		args = append(args, "-v", "data_"+volName+":/data")
 	}
 	// Default workdir to /home/container
 	args = append(args, "--workdir", "/home/container")
+	// Common data directory env vars (itzg/minecraft-server, etc.)
+	args = append(args, "-e", "DATA_DIR=/home/container")
+	args = append(args, "-e", "DATA_PATH=/home/container")
 	for _, e := range req.Env {
 		args = append(args, "-e", e)
 	}
