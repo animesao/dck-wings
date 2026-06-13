@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -431,12 +433,11 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 	for _, p := range req.Ports {
 		args = append(args, "-p", p)
 	}
-	// Auto-mount /home/container volume if not specified
-	volName := req.Name
-	if volName == "" {
-		volName = strings.ReplaceAll(req.Image, "/", "_")
-		volName = strings.ReplaceAll(volName, ":", "_")
-	}
+	// Auto-mount /home/container + /data to a unique named volume
+	// so each container gets its own isolated filesystem.
+	volBytes := make([]byte, 8)
+	rand.Read(volBytes)
+	volName := hex.EncodeToString(volBytes)
 	hasHomeVolume := false
 	for _, v := range req.Volumes {
 		parts := strings.SplitN(v, ":", 2)
@@ -446,8 +447,6 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "-v", v)
 	}
 	if !hasHomeVolume {
-		// Mount the same volume to both /home/container and /data
-		// (Pterodactyl-compatible: apps writing to /data appear in /home/container)
 		args = append(args, "-v", "data_"+volName+":/home/container")
 		args = append(args, "-v", "data_"+volName+":/data")
 	}
