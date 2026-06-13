@@ -435,20 +435,25 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	// Auto-mount /home/container + /data to a unique named volume
 	// so each container gets its own isolated filesystem.
+	// dck's -v flag is a single comma-separated string, so combine all.
 	volBytes := make([]byte, 8)
 	rand.Read(volBytes)
 	volName := hex.EncodeToString(volBytes)
+	var volArgs []string
 	hasHomeVolume := false
 	for _, v := range req.Volumes {
 		parts := strings.SplitN(v, ":", 2)
 		if len(parts) == 2 && parts[1] == "/home/container" {
 			hasHomeVolume = true
 		}
-		args = append(args, "-v", v)
+		volArgs = append(volArgs, v)
 	}
 	if !hasHomeVolume {
-		args = append(args, "-v", "data_"+volName+":/home/container")
-		args = append(args, "-v", "data_"+volName+":/data")
+		volArgs = append(volArgs, "data_"+volName+":/home/container")
+		volArgs = append(volArgs, "data_"+volName+":/data")
+	}
+	if len(volArgs) > 0 {
+		args = append(args, "-v", strings.Join(volArgs, ","))
 	}
 	// Default workdir to /home/container
 	args = append(args, "--workdir", "/home/container")
