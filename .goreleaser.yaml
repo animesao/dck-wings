@@ -1,0 +1,40 @@
+version: 2
+project_name: dck-wings
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - binary: dck-wings
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+
+nfpms:
+  - package_name: dck-wings
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Arch }}"
+    formats: [deb]
+    vendor: animesao
+    homepage: https://github.com/animesao/dck-wings
+    description: dck agent for container nodes
+
+snapcrafts:
+  - name: dck-wings
+    publish: false
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - LICENSE*
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+release:
+  github:
+    owner: animesao
+    name: dck-wings

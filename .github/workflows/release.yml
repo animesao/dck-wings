@@ -3,50 +3,31 @@ name: Release
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  goreleaser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '>=1.18'
+          go-version: '1.22'
 
-      - name: Read version
-        run: echo "VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)" >> $GITHUB_ENV
+      - name: Install Snapcraft
+        run: sudo snap install snapcraft --classic
 
-      - name: Build for linux/amd64
-        run: |
-          GOOS=linux GOARCH=amd64 go build -o dck-wings-linux-amd64 -ldflags="-s -w" .
-
-      - name: Build for linux/arm64
-        run: |
-          GOOS=linux GOARCH=arm64 go build -o dck-wings-linux-arm64 -ldflags="-s -w" .
-
-      - name: Extract changelog
-        run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          awk -v ver="$VERSION" '
-            /^## / {
-              if (found) exit
-              if ($0 ~ "^## " ver " ") found=1
-              next
-            }
-            found { print }
-          ' CHANGELOG.md > /tmp/release-notes.md
-          echo "Release notes extracted for v$VERSION"
-
-      - name: Create release and upload
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> 2"
+          args: release --clean
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create ${{ github.ref_name }} --title "${{ github.ref_name }}" --notes-file /tmp/release-notes.md 2>/dev/null || true
-          gh release upload ${{ github.ref_name }} dck-wings-linux-amd64 --clobber
-          gh release upload ${{ github.ref_name }} dck-wings-linux-arm64 --clobber
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
