@@ -1,6 +1,6 @@
 name: dck-wings
 base: core22
-version: 1.4.0
+version: latest
 summary: dck agent for container nodes
 description: |
   dck-wings is the agent component of the dck container management system.
@@ -19,6 +19,5 @@ parts:
   dck-wings:
     plugin: go
     source: .
-    source-type: local
     build-snaps:
       - go/1.22/stable

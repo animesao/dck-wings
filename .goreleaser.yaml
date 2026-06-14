@@ -21,10 +21,6 @@ nfpms:
     homepage: https://github.com/animesao/dck-wings
     description: dck agent for container nodes
 
-snapcrafts:
-  - name: dck-wings
-    publish: false
-
 archives:
   - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
