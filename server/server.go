@@ -231,7 +231,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":      "ok",
-		"version":     "1.3.0",
+		"version":     "1.4.0",
 		"dck":         s.cfg.DckBin,
 		"hostname":    hostname,
 		"cpu_model":   cpuModel,
