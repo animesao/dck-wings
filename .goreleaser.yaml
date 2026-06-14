@@ -1,11 +1,6 @@
 version: 2
 project_name: dck-wings
 
-before:
-  hooks:
-    - cmd: go mod tidy
-      dir: .
-
 builds:
   - binary: dck-wings
     goos: [linux]
