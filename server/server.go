@@ -22,7 +22,23 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		host := r.Host
+		allowed := strings.HasPrefix(origin, "http://"+host) ||
+			strings.HasPrefix(origin, "https://"+host) ||
+			strings.HasPrefix(origin, "http://localhost") ||
+			strings.HasPrefix(origin, "https://localhost") ||
+			strings.HasPrefix(origin, "http://127.0.0.1") ||
+			strings.HasPrefix(origin, "https://127.0.0.1")
+		if !allowed {
+			log.Printf("[WARN] WebSocket connection rejected from origin: %s", origin)
+		}
+		return allowed
+	},
 }
 
 type rateLimiter struct {
@@ -38,11 +54,23 @@ type visitor struct {
 }
 
 func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{
+	rl := &rateLimiter{
 		visitors: make(map[string]*visitor),
 		limit:    limit,
 		window:   window,
 	}
+	go func() {
+		for range time.NewTicker(10 * time.Minute).C {
+			rl.mu.Lock()
+			for ip, v := range rl.visitors {
+				if time.Since(v.lastSeen) > 2*window {
+					delete(rl.visitors, ip)
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}()
+	return rl
 }
 
 func (rl *rateLimiter) Allow(ip string) bool {
@@ -125,11 +153,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		token := r.Header.Get("Authorization")
-		if token == "" {
-			token = r.URL.Query().Get("api_key")
-		}
 		if strings.HasPrefix(token, "Bearer ") {
 			token = token[7:]
+		} else {
+			// Do NOT accept api_key from URL query parameter (security: prevents log leakage)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
 		if token != s.cfg.APIKey {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -479,7 +508,7 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleContainerByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/containers/")
 	id = strings.TrimSuffix(id, "/")
-	if id == "" || strings.Contains(id, "..") {
+	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") || strings.Contains(id, "\x00") {
 		http.Error(w, "Invalid container ID", http.StatusBadRequest)
 		return
 	}
@@ -647,7 +676,11 @@ func (s *Server) containerConsole(w http.ResponseWriter, r *http.Request, id str
 	defer conn.Close()
 
 	shell := r.URL.Query().Get("shell")
-	if shell == "" {
+	allowedShells := map[string]bool{
+		"/bin/sh": true, "/bin/bash": true, "/bin/zsh": true,
+		"/bin/dash": true, "/bin/ash": true, "/bin/ksh": true,
+	}
+	if !allowedShells[shell] {
 		shell = "/bin/sh"
 	}
 
@@ -777,29 +810,35 @@ type FileInfo struct {
 }
 
 func (s *Server) fileList(w http.ResponseWriter, id, path string) {
-	out, err := s.dck("exec", id, "ls", "-la", "--time-style=+%Y-%m-%dT%H:%M:%S", path)
+	// Use find with -printf for reliable output (no parsing issues)
+	out, err := s.dck("exec", id, "sh", "-c", `find "$1" -mindepth 1 -maxdepth 1 -printf '%M|%s|%T@|%p\0' 2>/dev/null || ls -1 "$1"`, "--", path)
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		// Fallback: return empty
+		json.NewEncoder(w).Encode([]FileInfo{})
 		return
 	}
 
 	var files []FileInfo
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "total ") {
+	for _, entry := range strings.Split(out, "\x00") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 6 {
+		parts := strings.SplitN(entry, "|", 4)
+		if len(parts) < 4 {
+			// Old ls -1 fallback: just names
+			files = append(files, FileInfo{Name: entry, IsDir: false})
 			continue
 		}
-		size, _ := strconv.ParseInt(fields[4], 10, 64)
+		size, _ := strconv.ParseInt(parts[1], 10, 64)
+		modSecs, _ := strconv.ParseFloat(parts[2], 64)
+		modTime := time.Unix(int64(modSecs), 0).Format("2006-01-02T15:04:05")
 		files = append(files, FileInfo{
-			Mode:    fields[0],
+			Mode:    parts[0],
 			Size:    size,
-			ModTime: fields[5] + "T" + fields[6],
-			Name:    fields[7],
-			IsDir:   strings.HasPrefix(fields[0], "d"),
+			ModTime: modTime,
+			Name:    filepath.Base(parts[3]),
+			IsDir:   strings.HasPrefix(parts[0], "d"),
 		})
 	}
 	json.NewEncoder(w).Encode(files)
