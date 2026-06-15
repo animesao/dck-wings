@@ -111,6 +111,7 @@ func New(cfg Config) *Server {
 
 	mux.HandleFunc("/api/system/prune", s.handleSystemPrune)
 	mux.HandleFunc("/api/system/stop-all", s.handleStopAll)
+	mux.HandleFunc("/api/bootstrap", s.handleBootstrap)
 
 	s.server = &http.Server{
 		Handler:      s.authMiddleware(mux),
@@ -220,6 +221,19 @@ func (s *Server) readContainerState(id string) (map[string]interface{}, error) {
 }
 
 // --- Health ---
+
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	out, err := s.dck("bootstrap", "--install")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("%s: %s", err.Error(), out)})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	hostname, _ := os.Hostname()
