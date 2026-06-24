@@ -17,6 +17,7 @@ type Config struct {
 	TLSCert    string `toml:"tls_cert"`
 	TLSKey     string `toml:"tls_key"`
 	DckTimeout int    `toml:"dck_timeout"`
+	AuditSize  int    `toml:"audit_size"`
 }
 
 func DefaultConfig() Config {
@@ -28,6 +29,7 @@ func DefaultConfig() Config {
 		DataDir:    "/var/lib/dck-wings",
 		LogDir:     "/var/log/dck-wings",
 		DckTimeout: 60,
+		AuditSize:  1000,
 	}
 }
 
@@ -57,6 +59,7 @@ log_dir = "/var/log/dck-wings"
 tls_cert = ""
 tls_key = ""
 dck_timeout = 60
+audit_size = 1000
 `
 	return os.WriteFile(path, []byte(content), 0644)
 }

@@ -91,14 +91,61 @@ func (rl *rateLimiter) Allow(ip string) bool {
 	return v.count <= rl.limit
 }
 
+type AuditEntry struct {
+	Timestamp string `json:"timestamp"`
+	ClientIP  string `json:"client_ip"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	Status    int    `json:"status"`
+}
+
 type Server struct {
 	cfg         Config
 	server      *http.Server
 	rateLimiter *rateLimiter
+	auditLog    *AuditLogger
+}
+
+type AuditLogger struct {
+	mu   sync.Mutex
+	buf  []AuditEntry
+	size int
+}
+
+func NewAuditLogger(maxSize int) *AuditLogger {
+	return &AuditLogger{buf: make([]AuditEntry, 0, maxSize), size: maxSize}
+}
+
+func (a *AuditLogger) Append(entry AuditEntry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.buf = append(a.buf, entry)
+	if len(a.buf) > a.size {
+		a.buf = a.buf[len(a.buf)-a.size:]
+	}
+}
+
+func (a *AuditLogger) Recent(n int) []AuditEntry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if n > len(a.buf) {
+		n = len(a.buf)
+	}
+	out := make([]AuditEntry, n)
+	copy(out, a.buf[len(a.buf)-n:])
+	return out
 }
 
 func New(cfg Config) *Server {
-	s := &Server{cfg: cfg, rateLimiter: newRateLimiter(100, time.Second)}
+	auditSize := cfg.AuditSize
+	if auditSize <= 0 {
+		auditSize = 1000
+	}
+	s := &Server{
+		cfg:         cfg,
+		rateLimiter: newRateLimiter(100, time.Second),
+		auditLog:    NewAuditLogger(auditSize),
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/health", s.handleHealth)
@@ -112,6 +159,8 @@ func New(cfg Config) *Server {
 	mux.HandleFunc("/api/system/prune", s.handleSystemPrune)
 	mux.HandleFunc("/api/system/stop-all", s.handleStopAll)
 	mux.HandleFunc("/api/bootstrap", s.handleBootstrap)
+	mux.HandleFunc("/api/audit", s.handleAudit)
+	mux.HandleFunc("/api/metrics", s.handleMetrics)
 
 	s.server = &http.Server{
 		Handler:      s.authMiddleware(mux),
@@ -138,9 +187,23 @@ func (s *Server) Start(addr string) error {
 }
 
 func (s *Server) Stop() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	log.Println("[dck-wings] Initiating graceful shutdown...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	s.server.Shutdown(ctx)
+	if err := s.server.Shutdown(ctx); err != nil {
+		log.Printf("[dck-wings] Shutdown error: %v", err)
+	}
+	log.Println("[dck-wings] Shutdown complete")
+}
+
+type auditResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *auditResponseWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -157,7 +220,6 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(token, "Bearer ") {
 			token = token[7:]
 		} else {
-			// Do NOT accept api_key from URL query parameter (security: prevents log leakage)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -165,7 +227,15 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		aw := &auditResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(aw, r)
+		s.auditLog.Append(AuditEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			ClientIP:  clientIP,
+			Method:    r.Method,
+			Path:      r.URL.Path,
+			Status:    aw.statusCode,
+		})
 	})
 }
 
@@ -245,7 +315,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":      "ok",
-		"version":     "1.4.0",
+		"version":     "1.5.0",
 		"dck":         s.cfg.DckBin,
 		"hostname":    hostname,
 		"cpu_model":   cpuModel,
@@ -522,7 +592,7 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleContainerByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/containers/")
 	id = strings.TrimSuffix(id, "/")
-	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") || strings.Contains(id, "\x00") {
+	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "\\") || strings.Contains(id, "\x00") {
 		http.Error(w, "Invalid container ID", http.StatusBadRequest)
 		return
 	}
@@ -687,7 +757,6 @@ func (s *Server) containerConsole(w http.ResponseWriter, r *http.Request, id str
 	if err != nil {
 		return
 	}
-	defer conn.Close()
 
 	shell := r.URL.Query().Get("shell")
 	allowedShells := map[string]bool{
@@ -698,25 +767,32 @@ func (s *Server) containerConsole(w http.ResponseWriter, r *http.Request, id str
 		shell = "/bin/sh"
 	}
 
-	cmd := exec.Command(s.cfg.DckBin, "exec", "-i", "-t", id, shell)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, s.cfg.DckBin, "exec", "-i", "-t", id, shell)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error creating stdin pipe: "+err.Error()+"\n"))
+		conn.Close()
 		return
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error creating stdout pipe: "+err.Error()+"\n"))
+		conn.Close()
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error creating stderr pipe: "+err.Error()+"\n"))
+		conn.Close()
 		return
 	}
 
 	if err := cmd.Start(); err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()+"\n"))
+		conn.Close()
 		return
 	}
 
@@ -757,6 +833,7 @@ func (s *Server) containerConsole(w http.ResponseWriter, r *http.Request, id str
 	}()
 
 	go func() {
+		defer cancel()
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
@@ -767,8 +844,12 @@ func (s *Server) containerConsole(w http.ResponseWriter, r *http.Request, id str
 		}
 	}()
 
-	<-done
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	cmd.Wait()
+	conn.Close()
 }
 
 // --- File Manager ---
@@ -1012,6 +1093,69 @@ func (s *Server) handleImageByRef(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// --- Audit & Metrics ---
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entries := s.auditLog.Recent(100)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"entries": entries,
+		"total":   len(entries),
+	})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	out, err := s.dck("ps", "-a")
+	totalContainers := 0
+	runningContainers := 0
+	if err == nil {
+		lines := strings.Split(out, "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				totalContainers++
+				if fields[2] == "running" {
+					runningContainers++
+				}
+			}
+		}
+	}
+
+	out, _ = s.dck("images")
+	imageCount := 0
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "REPOSITORY") {
+			imageCount++
+		}
+	}
+
+	hostname, _ := os.Hostname()
+	memTotal, memUsed, _ := readMemInfo()
+	diskTotal, diskUsed, _ := readDiskUsage("/")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"host":              hostname,
+		"containers_total":  totalContainers,
+		"containers_running": runningContainers,
+		"images":            imageCount,
+		"memory_total_bytes": memTotal,
+		"memory_used_bytes": memUsed,
+		"disk_total_bytes":  diskTotal,
+		"disk_used_bytes":   diskUsed,
+		"cpu_cores":         runtime.NumCPU(),
+	})
 }
 
 // --- Bulk Operations ---

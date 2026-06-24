@@ -11,7 +11,7 @@ import (
 	"dck-wings/server"
 )
 
-var version = "1.4.0"
+var version = "1.5.0"
 
 func main() {
 	configPath := flag.String("config", "/etc/dck-wings/config.toml", "Path to config file")

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.0 (2026-06-24)
+
+### Features
+- **Audit log**: `GET /api/audit` отдаёт последние 100 запросов (timestamp, IP, method, path, status)
+- **Metrics endpoint**: `GET /api/metrics` — метрики контейнеров, образов, CPU/memory/disk
+- **Graceful shutdown**: таймаут увеличен до 10s, корректное завершение WebSocket консолей
+- **Config**: добавлен параметр `audit_size` для лимита записей аудита
+
+### Code Quality
+- **Server tests**: 18 unit-тестов (health, rate limiter, validation, method checks, body limits)
+
+### Bug Fixes
+- **Container ID validation**: `/` больше не блокирует action-запросы (start/stop/restart)
+
 ## 1.3.0 (2026-06-13)
 
 ### Security
