@@ -1,10 +1,18 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump: auto, major, minor, or patch'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - major
+          - minor
+          - patch
 
 permissions:
   contents: write
@@ -20,9 +28,67 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+          cache: true
 
-      - name: Prepare modules
-        run: go mod tidy
+      - name: Determine next version
+        id: version
+        run: |
+          CURRENT=$(cat VERSION | tr -d ' \n')
+          echo "Current version: $CURRENT"
+
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
+          echo "Latest tag: $LATEST_TAG"
+
+          BASE=$CURRENT
+          if [ -n "$LATEST_TAG" ] && [ "$(printf '%s\n' "$LATEST_TAG" "$CURRENT" | sort -V | tail -1)" = "$LATEST_TAG" ]; then
+            BASE=$LATEST_TAG
+          fi
+          echo "Base version: $BASE"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          BUMP="${{ inputs.bump }}"
+
+          if [ "$BUMP" = "auto" ]; then
+            if [ "$PATCH" -ge 10 ]; then
+              BUMP="minor"
+            else
+              BUMP="patch"
+            fi
+          fi
+
+          case "$BUMP" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Next version: $NEXT"
+          echo "version=$NEXT" >> $GITHUB_OUTPUT
+          echo "tag=v$NEXT" >> $GITHUB_OUTPUT
+
+      - name: Update VERSION file
+        run: |
+          echo "${{ steps.version.outputs.version }}" > VERSION
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add VERSION
+          git commit -m "Bump version to ${{ steps.version.outputs.version }}"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin main --tags
 
       - uses: goreleaser/goreleaser-action@v6
         with:
@@ -33,7 +99,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set snap version
-        run: sed -i "s/^version:.*/version: ${GITHUB_REF_NAME#v}/" snap/snapcraft.yaml
+        run: sed -i "s/^version:.*/version: ${{ steps.version.outputs.version }}/" snap/snapcraft.yaml
 
       - name: Build snap
         uses: snapcore/action-build@v1
@@ -41,6 +107,6 @@ jobs:
 
       - name: Upload snap to release
         run: |
-          gh release upload "${GITHUB_REF_NAME}" "${{ steps.snapcraft.outputs.snap }}" --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release upload "v${{ steps.version.outputs.version }}" "${{ steps.snapcraft.outputs.snap }}" --repo "${GITHUB_REPOSITORY}" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

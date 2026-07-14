@@ -18,6 +18,7 @@ type Config struct {
 	TLSKey     string `toml:"tls_key"`
 	DckTimeout int    `toml:"dck_timeout"`
 	AuditSize  int    `toml:"audit_size"`
+	Version    string `toml:"-"` // injected at build time
 }
 
 func DefaultConfig() Config {

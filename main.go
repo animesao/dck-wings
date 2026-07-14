@@ -1,17 +1,28 @@
 package main
 
 import (
+	_ "embed"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"dck-wings/server"
 )
 
-var version = "1.5.0"
+//go:embed VERSION
+var versionFile string
+
+var version string
+
+func init() {
+	if version == "" {
+		version = strings.TrimSpace(versionFile)
+	}
+}
 
 func main() {
 	configPath := flag.String("config", "/etc/dck-wings/config.toml", "Path to config file")
@@ -29,6 +40,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Config: %v", err)
 	}
+	cfg.Version = version
 
 	srv := server.New(cfg)
 

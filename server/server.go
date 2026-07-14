@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,7 +174,9 @@ func New(cfg Config) *Server {
 func (s *Server) Start(addr string) error {
 	s.server.Addr = addr
 	if s.cfg.LogDir != "" {
-		os.MkdirAll(s.cfg.LogDir, 0755)
+		if err := os.MkdirAll(s.cfg.LogDir, 0755); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
 		logPath := filepath.Join(s.cfg.LogDir, "server.log")
 		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err == nil {
@@ -220,8 +223,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(token, "Bearer ") {
 			token = token[7:]
 		} else {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
+			token = r.URL.Query().Get("api_key")
+			if token == "" {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
 		}
 		if token != s.cfg.APIKey {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -313,9 +319,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	diskTotal, diskUsed, diskPct := readDiskUsage("/")
 	uptime := readUptime()
 
+	ver := s.cfg.Version
+	if ver == "" {
+		ver = "1.5.0"
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":      "ok",
-		"version":     "1.5.0",
+		"version":     ver,
 		"dck":         s.cfg.DckBin,
 		"hostname":    hostname,
 		"cpu_model":   cpuModel,
@@ -592,6 +602,9 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleContainerByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/containers/")
 	id = strings.TrimSuffix(id, "/")
+	if decoded, err := url.PathUnescape(id); err == nil {
+		id = decoded
+	}
 	if id == "" || strings.Contains(id, "..") || strings.Contains(id, "\\") || strings.Contains(id, "\x00") {
 		http.Error(w, "Invalid container ID", http.StatusBadRequest)
 		return
@@ -957,7 +970,10 @@ func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request, id, path stri
 		return
 	}
 	dir := filepath.Dir(path)
-	s.dck("exec", id, "mkdir", "-p", dir)
+	if _, err := s.dck("exec", id, "mkdir", "-p", dir); err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("mkdir: %s", err.Error())})
+		return
+	}
 
 	out, err := s.dckWithStdin(
 		strings.NewReader(string(body)),
@@ -988,7 +1004,10 @@ func (s *Server) fileRename(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	s.dck("exec", id, "mkdir", "-p", filepath.Dir(req.NewPath))
+	if _, err := s.dck("exec", id, "mkdir", "-p", filepath.Dir(req.NewPath)); err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("mkdir: %s", err.Error())})
+		return
+	}
 	_, err := s.dck("exec", id, "mv", req.OldPath, req.NewPath)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -1014,7 +1033,10 @@ func (s *Server) fileUpload(w http.ResponseWriter, r *http.Request, id, path str
 	}
 	defer file.Close()
 
-	s.dck("exec", id, "mkdir", "-p", filepath.Dir(path))
+	if _, err := s.dck("exec", id, "mkdir", "-p", filepath.Dir(path)); err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("mkdir: %s", err.Error())})
+		return
+	}
 	out, err := s.dckWithStdin(
 		file,
 		"exec", id, "sh", "-c", `cat > "$1"`, "--", path,

@@ -18,6 +18,7 @@ func testConfig() Config {
 		DataDir:    "/tmp/dck-wings-test",
 		LogDir:     "",
 		DckTimeout: 10,
+		Version:    "1.5.0",
 	}
 }
 
@@ -127,20 +128,6 @@ func TestMethodNotAllowed(t *testing.T) {
 		if w.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s %s returned %d, want 405", tt.method, tt.path, w.Code)
 		}
-	}
-}
-
-func TestContainerIDWithBackslashEncoded(t *testing.T) {
-	cfg := testConfig()
-	s := New(cfg)
-
-	req := httptest.NewRequest("GET", "/api/containers/a%5Cb/start", nil)
-	req.Header.Set("Authorization", "Bearer test-key-123")
-	w := httptest.NewRecorder()
-	s.server.Handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("ID with backslash should be rejected, got %d", w.Code)
 	}
 }
 
@@ -269,6 +256,92 @@ func TestExecNoCmd(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestAuthViaQueryParam(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+
+	req := httptest.NewRequest("GET", "/api/health?api_key=test-key-123", nil)
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with query api_key, got %d", w.Code)
+	}
+}
+
+func TestAuthViaQueryParamWrongKey(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+
+	req := httptest.NewRequest("GET", "/api/health?api_key=wrong-key", nil)
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong query api_key, got %d", w.Code)
+	}
+}
+
+func TestContainerIDWithBackslashEncoded(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+
+	req := httptest.NewRequest("GET", "/api/containers/a%5Cb/start", nil)
+	req.Header.Set("Authorization", "Bearer test-key-123")
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("ID with backslash should be rejected, got %d", w.Code)
+	}
+}
+
+func TestContainerIDWithNullByte(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+
+	req := httptest.NewRequest("GET", "/api/containers/test%00id/start", nil)
+	req.Header.Set("Authorization", "Bearer test-key-123")
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("ID with null byte should be rejected, got %d", w.Code)
+	}
+}
+
+func TestContainerCreateEmptyBody(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+
+	body := strings.NewReader(`{}`)
+	req := httptest.NewRequest("POST", "/api/containers", body)
+	req.Header.Set("Authorization", "Bearer test-key-123")
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty body, got %d", w.Code)
+	}
+}
+
+func TestHealthVersionMatchesConfig(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+
+	req := httptest.NewRequest("GET", "/api/health", nil)
+	req.Header.Set("Authorization", "Bearer test-key-123")
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, req)
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["version"] != "1.5.0" {
+		t.Errorf("version = %v, want 1.5.0", resp["version"])
 	}
 }
 
