@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       bump:
@@ -30,21 +27,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: '1.22'
           cache: true
 
       - name: Determine next version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.ref_name }}" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            echo "Using tag version: $VERSION"
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-            echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
-            echo "skip_bump=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
           CURRENT=$(cat VERSION | tr -d ' \n')
           echo "Current version: $CURRENT"
 
@@ -91,10 +79,8 @@ jobs:
           echo "Next version: $NEXT"
           echo "version=$NEXT" >> $GITHUB_OUTPUT
           echo "tag=v$NEXT" >> $GITHUB_OUTPUT
-          echo "skip_bump=false" >> $GITHUB_OUTPUT
 
       - name: Update VERSION file
-        if: steps.version.outputs.skip_bump != 'true'
         run: |
           echo "${{ steps.version.outputs.version }}" > VERSION
           git config user.name "github-actions"
@@ -104,28 +90,26 @@ jobs:
           git tag "v${{ steps.version.outputs.version }}"
           git push origin main --tags
 
-      - name: Sync VERSION file from tag
-        if: steps.version.outputs.skip_bump == 'true'
+      - name: Build binaries (amd64)
         run: |
-          echo "${{ steps.version.outputs.version }}" > VERSION
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -ldflags="-X main.version=${{ steps.version.outputs.version }}" -o dist/dck-wings-linux-amd64 .
+          cd dist
+          sha256sum dck-wings-linux-amd64 > dck-wings-linux-amd64.sha256
 
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Build binaries (arm64)
+        run: |
+          GOOS=linux GOARCH=arm64 go build -ldflags="-X main.version=${{ steps.version.outputs.version }}" -o dist/dck-wings-linux-arm64 .
+          cd dist
+          sha256sum dck-wings-linux-arm64 > dck-wings-linux-arm64.sha256
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          distribution: goreleaser
-          version: "~> 2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "v${{ steps.version.outputs.version }}"
+          body: |
+            ## dck-wings v${{ steps.version.outputs.version }}
 
-      - name: Set snap version
-        run: sed -i "s/^version:.*/version: ${{ steps.version.outputs.version }}/" snap/snapcraft.yaml
-
-      - name: Build snap
-        uses: snapcore/action-build@v1
-        id: snapcraft
-
-      - name: Upload snap to release
-        run: |
-          gh release upload "v${{ steps.version.outputs.version }}" "${{ steps.snapcraft.outputs.snap }}" --repo "${GITHUB_REPOSITORY}" --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            See [CHANGELOG](CHANGELOG.md) for details.
+          files: dist/*
